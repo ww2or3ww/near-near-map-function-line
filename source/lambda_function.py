@@ -1,10 +1,12 @@
 # --- coding: utf-8 ---
+# near-near-map-function-line
 
 import sys
 import json
 import os
 import re
 import requests
+import datetime
 import boto3
 from boto3.dynamodb.conditions import Key
 from retry import retry
@@ -26,11 +28,13 @@ logger.setLevel(logging.INFO)
 LINE_CHANNEL_ACCESS_TOKEN       = os.environ['LINE_CHANNEL_ACCESS_TOKEN']
 LINE_CHANNEL_SECRET             = os.environ['LINE_CHANNEL_SECRET']
 DYNAMODB_NAME                   = os.environ['DYNAMODB_NAME']
+DYNAMODB_NAME2                  = os.environ['DYNAMODB_NAME2']
 API_ADDRESS_NEAR_NEAR_SEARCH    = os.environ['API_ADDRESS_NEAR_NEAR_SEARCH']
 
 LINE_BOT_API = LineBotApi(LINE_CHANNEL_ACCESS_TOKEN)
 LINE_HANDLER = WebhookHandler(LINE_CHANNEL_SECRET)
 DYNAMO_TABLE = boto3.resource('dynamodb').Table(DYNAMODB_NAME)
+DYNAMO_TABLE2 = boto3.resource('dynamodb').Table(DYNAMODB_NAME2)
 
 RESULT_OK = {
     'isBase64Encoded': False,
@@ -53,7 +57,8 @@ MSG_ANNOUNCE_WEB    = 'Web版も試してみてね♪\nhttps://near-near-map.w2o
 def lambda_handler(event, context):
     try:
         logger.info('=== START ===')
-        signature = event['headers']['X-Line-Signature']
+        logger.info(json.dumps(event, ensure_ascii=False, indent=2))
+        signature = event['headers']['x-line-signature']
         body = event['body']
         logger.info(body)
         
@@ -70,7 +75,7 @@ def lambda_handler(event, context):
                 # 呼びかけ(ヘルプ 等) or ユーザー情報が無かった
                 # -> ヘルプメッセージ
                 put_user_if_not_exist(profile.user_id, profile.display_name, profile.picture_url)
-                LINE_BOT_API.reply_message(line_event.reply_token, make_text_message(MSG_HELP + '\n'+ MSG_ANNOUNCE_WEB))
+                LINE_BOT_API.reply_message(line_event.reply_token, make_text_message(MSG_HELP))
             elif word in NEAR_NEAR_START or 'selected_type' not in user_info:
                 # 呼びかけ(にやーにやーマップ 等)
                 # -> セレクトメッセージ
@@ -82,6 +87,7 @@ def lambda_handler(event, context):
                 selected_type = user_info['selected_type']
                 query_param = 'type={0}&count=3&sort=1&address={1}'.format(selected_type, line_event.message.text)
                 reply_by_nearnearmap_api(line_event, query_param, selected_type)
+            put_data(profile.user_id, profile.display_name, line_event.message.text)
                 
         @LINE_HANDLER.add(MessageEvent, message=LocationMessage)
         def on_location(line_event):
@@ -101,6 +107,7 @@ def lambda_handler(event, context):
                 selected_type = user_info['selected_type']
                 query_param = 'type={0}&count=3&sort=1&latlon={1},{2}'.format(selected_type, line_event.message.latitude, line_event.message.longitude)
                 reply_by_nearnearmap_api(line_event, query_param, selected_type)
+                put_data(profile.user_id, profile.display_name, query_param)
                 
         @LINE_HANDLER.add(PostbackEvent)
         def on_postback(line_event):
@@ -126,7 +133,7 @@ def lambda_handler(event, context):
                     type_word = type_id_2_word(selected_type)
                     message = '{0} ですね！\n場所や位置情報を教えてにゃ～♪'.format(type_word)
                     LINE_BOT_API.reply_message(line_event.reply_token, make_text_message(message))
-
+                put_data(profile.user_id, profile.display_name, selected_type)
 
         LINE_HANDLER.handle(body, signature)
 
@@ -313,6 +320,21 @@ def put_user_info(user_id, display_name, picture_url):
         'picture_url': picture_url
       }
     )
+
+@retry(tries=3, delay=1)
+def put_data(user_id, display_name, data):
+    try:
+        now = datetime.datetime.now()
+        DYNAMO_TABLE2.put_item(
+          Item = {
+            'user_id': user_id, 
+            'datetime': now.strftime('%Y%m%d_%H%M%S_%f'), 
+            'display_name': display_name, 
+            'data': data
+          }
+        )
+    except Exception as e:
+        logger.exception(e)
 
 @retry(tries=3, delay=1)
 def update_user_selected_type(user_id, selected_type):
